@@ -87,21 +87,7 @@ CMD ["sse", "--host", "0.0.0.0", "--port", "8080"]
 
 ---
 
-## Summary
-
-| # | File | Commit | Change | Purpose |
-|---|------|--------|--------|---------|
-| 1 | `server.py` | `ccd149b` | `default="sse"` in argparse | Default to SSE transport for Cloud Run |
-| 2 | `server.py` | `ccd149b` | `transport="sse"` in `mcp.run()` | Replace streamable-http with SSE |
-| 3 | `server.py` | `4778237` | `host="0.0.0.0"` keyword arg in `FastMCP` | Bind to all interfaces for Cloud Run |
-| 4 | `Dockerfile` | `748c8b4`, `928ecb2` | `sse`, `0.0.0.0`, port `8080` in `CMD` | Fix transport, host, and port for Cloud Run |
-| 5 | `screener_service.py` | `6acc410` | Full-universe batching in `fetch_bollinger_analysis` | Fix alphabet bias on large exchanges (NYSE, NASDAQ) |
-
-All other code — imports, tool handlers, resource routing, and business logic — is identical to upstream.
-
----
-
-## [2026-05-10] — Fix `bollinger_scan` alphabet bias on large exchanges
+## [2026-05-10] — Fix `bollinger_scan` Alphabet Bias on Large Exchanges
 
 ### `src/tradingview_mcp/core/services/screener_service.py`
 
@@ -140,3 +126,17 @@ for i in range(0, len(symbols), batch_size):
 ```
 
 **Why:** Coinlist files (NYSE.txt, nasdaq.txt, etc.) are sorted alphabetically. The original `symbols[:limit*2]` truncation meant the scan only ever queried the first `limit*2` symbols — at `limit=100` that's 200 tickers, covering roughly A–AT on NYSE (~2,000 symbols total). Results were therefore always early-alphabet stocks regardless of BBW ranking. `fetch_trending_analysis` already used batched traversal correctly; this change brings `fetch_bollinger_analysis` into alignment. `limit` now correctly means "max results returned post-filter" rather than "fraction of universe scanned". Tested on NYSE 1D — results span full alphabet.
+
+---
+
+## Summary
+
+| # | File | Commit | Change | Purpose |
+|---|------|--------|--------|---------|
+| 1 | `server.py` | `ccd149b` | `default="sse"` in argparse | Default to SSE transport for Cloud Run |
+| 2 | `server.py` | `ccd149b` | `transport="sse"` in `mcp.run()` | Replace streamable-http with SSE |
+| 3 | `server.py` | `4778237` | `host="0.0.0.0"` keyword arg in `FastMCP` | Bind to all interfaces for Cloud Run |
+| 4 | `Dockerfile` | `748c8b4`, `928ecb2` | `sse`, `0.0.0.0`, port `8080` in `CMD` | Fix transport, host, and port for Cloud Run |
+| 5 | `screener_service.py` | `6acc410` | Full-universe batching in `fetch_bollinger_analysis` | Fix alphabet bias on large exchanges (NYSE, NASDAQ) |
+
+All other code — imports, tool handlers, resource routing, and business logic — is identical to upstream.
