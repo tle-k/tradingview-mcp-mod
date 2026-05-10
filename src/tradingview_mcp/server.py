@@ -70,8 +70,8 @@ except ImportError:
 # ── MCP server instance ────────────────────────────────────────────────────────
 
 mcp = FastMCP(
-    "0.0.0.0",
     name="TradingView Multi-Market Screener",
+    host="0.0.0.0",
     instructions=(
         "Multi-market screener backed by TradingView. "
         "Supports crypto exchanges (KuCoin, Binance, Bybit, MEXC, etc.) and stock markets "
