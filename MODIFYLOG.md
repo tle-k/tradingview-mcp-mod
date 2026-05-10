@@ -95,5 +95,48 @@ CMD ["sse", "--host", "0.0.0.0", "--port", "8080"]
 | 2 | `server.py` | `ccd149b` | `transport="sse"` in `mcp.run()` | Replace streamable-http with SSE |
 | 3 | `server.py` | `4778237` | `host="0.0.0.0"` keyword arg in `FastMCP` | Bind to all interfaces for Cloud Run |
 | 4 | `Dockerfile` | `748c8b4`, `928ecb2` | `sse`, `0.0.0.0`, port `8080` in `CMD` | Fix transport, host, and port for Cloud Run |
+| 5 | `screener_service.py` | `6acc410` | Full-universe batching in `fetch_bollinger_analysis` | Fix alphabet bias on large exchanges (NYSE, NASDAQ) |
 
 All other code — imports, tool handlers, resource routing, and business logic — is identical to upstream.
+
+---
+
+## [2026-05-10] — Fix `bollinger_scan` alphabet bias on large exchanges
+
+### `src/tradingview_mcp/core/services/screener_service.py`
+
+#### Change 5 — Full-universe batching in `fetch_bollinger_analysis` (commit `6acc410`)
+
+Replaced symbol truncation with the same batched-traversal pattern used by `fetch_trending_analysis`.
+
+```python
+# Before
+symbols = symbols[: limit * 2]
+screener = EXCHANGE_SCREENER.get(exchange, "crypto")
+
+try:
+    analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=symbols)
+except Exception as exc:
+    raise RuntimeError(f"Analysis failed: {exc}") from exc
+
+rows: List[Row] = []
+for key, value in analysis.items():
+    ...
+
+# After
+screener = EXCHANGE_SCREENER.get(exchange, "crypto")
+batch_size = 200
+rows: List[Row] = []
+
+for i in range(0, len(symbols), batch_size):
+    batch = symbols[i : i + batch_size]
+    try:
+        analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
+    except Exception:
+        continue  # skip failed batch, keep scanning the rest
+
+    for key, value in analysis.items():
+        ...
+```
+
+**Why:** Coinlist files (NYSE.txt, nasdaq.txt, etc.) are sorted alphabetically. The original `symbols[:limit*2]` truncation meant the scan only ever queried the first `limit*2` symbols — at `limit=100` that's 200 tickers, covering roughly A–AT on NYSE (~2,000 symbols total). Results were therefore always early-alphabet stocks regardless of BBW ranking. `fetch_trending_analysis` already used batched traversal correctly; this change brings `fetch_bollinger_analysis` into alignment. `limit` now correctly means "max results returned post-filter" rather than "fraction of universe scanned". Tested on NYSE 1D — results span full alphabet.
