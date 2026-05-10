@@ -42,4 +42,4 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 
 # Run the MCP server over SSE (compatible with Cloud Run)
 ENTRYPOINT ["tradingview-mcp"]
-CMD ["sse", "--host", "0.0.0.0", "--port", "${PORT}"]
+CMD ["sse", "--host", "0.0.0.0", "--port", "8080"]
