@@ -8,28 +8,7 @@ This file tracks changes made to the `tle-k/tradingview-mcp-mod` fork that diver
 
 **File modified:** `src/tradingview_mcp/server.py`
 
-### Change 1 — Host binding (commit `ccd149b`)
-
-Converted the server from a local-only tool to a public-facing web service by binding to all network interfaces.
-
-```python
-# Before
-mcp = FastMCP(
-    name="TradingView Multi-Market Screener",
-    ...
-
-# After
-mcp = FastMCP(
-    "0.0.0.0",
-    name="TradingView Multi-Market Screener",
-    ...
-```
-
-**Why:** Cloud Run routes inbound HTTPS traffic to the container's internal port. Without `host="0.0.0.0"`, the server binds only to `127.0.0.1` (loopback) and Cloud Run's proxy cannot reach it, causing all requests to fail with a connection-refused error.
-
----
-
-### Change 2 — Default transport mode (commit `ccd149b`)
+### Change 1 — Default transport mode (commit `ccd149b`)
 
 Changed the CLI argument default from `stdio` to `sse`.
 
@@ -47,7 +26,7 @@ default="sse",
 
 ---
 
-### Change 3 — Transport protocol (commit `ccd149b`)
+### Change 2 — Transport protocol (commit `ccd149b`)
 
 Switched the HTTP transport from `streamable-http` to `sse`.
 
@@ -63,25 +42,24 @@ mcp.run(transport="sse")
 
 ---
 
-### Change 4 — Fix host as keyword argument (commit `4778237`)
+### Change 3 — Host binding as keyword argument (commit `4778237`)
 
-Corrected the `FastMCP` initializer to pass the host as a proper keyword argument instead of a positional argument.
+Added `host="0.0.0.0"` as a keyword argument to the `FastMCP` initializer to bind the server to all network interfaces.
 
 ```python
-# Before (introduced in Change 1 — incorrect)
+# Before
 mcp = FastMCP(
-    "0.0.0.0",
     name="TradingView Multi-Market Screener",
     instructions=( ...
 
-# After (corrected)
+# After
 mcp = FastMCP(
     name="TradingView Multi-Market Screener",
     host="0.0.0.0",
     instructions=( ...
 ```
 
-**Why:** `FastMCP`'s first positional parameter is `name`, not `host`. Passing `"0.0.0.0"` positionally silently overwrote the server name, left the host unset (still defaulting to `127.0.0.1`), and caused the named `name=` kwarg to conflict. Using `host="0.0.0.0"` as a keyword argument correctly binds the interface while preserving the server name.
+**Why:** Cloud Run routes inbound HTTPS traffic to the container's internal port. Without `host="0.0.0.0"`, the server binds only to `127.0.0.1` (loopback) and Cloud Run's proxy cannot reach it, causing all requests to fail with a connection-refused error. Passing it as a keyword argument correctly binds the interface while preserving the server name.
 
 ---
 
@@ -89,9 +67,8 @@ mcp = FastMCP(
 
 | Commit | Change | Purpose |
 |--------|--------|---------|
-| `ccd149b` | `"0.0.0.0"` as first arg to `FastMCP` | Bind to all interfaces (later corrected) |
 | `ccd149b` | `default="sse"` in argparse | Default to HTTP transport for Cloud Run |
 | `ccd149b` | `transport="sse"` in `mcp.run()` | Use SSE instead of streamable-http |
-| `4778237` | `host="0.0.0.0"` as keyword arg | Fix incorrect positional arg for host binding |
+| `4778237` | `host="0.0.0.0"` as keyword arg in `FastMCP` | Bind to all interfaces for Cloud Run |
 
 All other code — imports, tool handlers, resource routing, and business logic — is identical to upstream.
