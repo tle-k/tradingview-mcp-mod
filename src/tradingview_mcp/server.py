@@ -70,6 +70,7 @@ except ImportError:
 # ── MCP server instance ────────────────────────────────────────────────────────
 
 mcp = FastMCP(
+    "0.0.0.0",
     name="TradingView Multi-Market Screener",
     instructions=(
         "Multi-market screener backed by TradingView. "
@@ -695,10 +696,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="TradingView Screener MCP server")
     parser.add_argument(
         "transport",
-        choices=["stdio", "streamable-http"],
-        default="stdio",
+        choices=["stdio", "sse"],
+        default="sse",
         nargs="?",
-        help="Transport (default stdio)",
+        help="Transport (default sse)",
     )
     parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
@@ -716,7 +717,7 @@ def main() -> None:
             mcp.settings.port = args.port
         except Exception:
             pass
-        mcp.run(transport="streamable-http")
+        mcp.run(transport="sse")
 
 
 if __name__ == "__main__":
