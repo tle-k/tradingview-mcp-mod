@@ -57,46 +57,48 @@ def fetch_bollinger_analysis(
     if not symbols:
         raise RuntimeError(f"No symbols found for exchange: {exchange}")
 
-    symbols = symbols[: limit * 2]
     screener = EXCHANGE_SCREENER.get(exchange, "crypto")
-
-    try:
-        analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=symbols)
-    except Exception as exc:
-        raise RuntimeError(f"Analysis failed: {exc}") from exc
-
+    batch_size = 200
     rows: List[Row] = []
-    for key, value in analysis.items():
-        try:
-            if value is None:
-                continue
-            indicators = value.indicators
-            metrics = compute_metrics(indicators)
-            if not metrics or metrics.get("bbw") is None:
-                continue
-            if bbw_filter is not None and (metrics["bbw"] >= bbw_filter or metrics["bbw"] <= 0):
-                continue
-            if not (indicators.get("EMA50") and indicators.get("RSI")):
-                continue
 
-            rows.append(
-                Row(
-                    symbol=key,
-                    changePercent=metrics["change"],
-                    indicators=IndicatorMap(
-                        open=metrics.get("open"),
-                        close=metrics.get("price"),
-                        SMA20=indicators.get("SMA20"),
-                        BB_upper=indicators.get("BB.upper"),
-                        BB_lower=indicators.get("BB.lower"),
-                        EMA50=indicators.get("EMA50"),
-                        RSI=indicators.get("RSI"),
-                        volume=indicators.get("volume"),
-                    ),
+    for i in range(0, len(symbols), batch_size):
+        batch = symbols[i : i + batch_size]
+        try:
+            analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
+        except Exception:
+            continue  # skip failed batch, keep scanning the rest
+
+        for key, value in analysis.items():
+            try:
+                if value is None:
+                    continue
+                indicators = value.indicators
+                metrics = compute_metrics(indicators)
+                if not metrics or metrics.get("bbw") is None:
+                    continue
+                if bbw_filter is not None and (metrics["bbw"] >= bbw_filter or metrics["bbw"] <= 0):
+                    continue
+                if not (indicators.get("EMA50") and indicators.get("RSI")):
+                    continue
+
+                rows.append(
+                    Row(
+                        symbol=key,
+                        changePercent=metrics["change"],
+                        indicators=IndicatorMap(
+                            open=metrics.get("open"),
+                            close=metrics.get("price"),
+                            SMA20=indicators.get("SMA20"),
+                            BB_upper=indicators.get("BB.upper"),
+                            BB_lower=indicators.get("BB.lower"),
+                            EMA50=indicators.get("EMA50"),
+                            RSI=indicators.get("RSI"),
+                            volume=indicators.get("volume"),
+                        ),
+                    )
                 )
-            )
-        except (TypeError, ZeroDivisionError, KeyError):
-            continue
+            except (TypeError, ZeroDivisionError, KeyError):
+                continue
 
     rows.sort(key=lambda x: x["changePercent"], reverse=True)
     return rows[:limit]
