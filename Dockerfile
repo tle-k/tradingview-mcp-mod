@@ -30,13 +30,16 @@ COPY --from=builder /app /app
 RUN useradd -m mcpuser && chown -R mcpuser:mcpuser /app
 USER mcpuser
 
+# Cloud Run injects $PORT at runtime; default to 8080 if not set
+ENV PORT=8080
+
 # Expose the HTTP port
-EXPOSE 8000
+EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/health')" || exit 1
 
-# Run the MCP server over streamable-http (ideal for Docker/remote deployments)
+# Run the MCP server over SSE (compatible with Cloud Run)
 ENTRYPOINT ["tradingview-mcp"]
-CMD ["streamable-http", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sse", "--host", "0.0.0.0", "--port", "${PORT}"]
