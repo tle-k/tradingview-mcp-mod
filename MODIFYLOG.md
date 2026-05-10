@@ -6,9 +6,9 @@ This file tracks changes made to the `tle-k/tradingview-mcp-mod` fork that diver
 
 ## [2026-05-10] — Google Cloud Run Deployment Configuration
 
-**File modified:** `src/tradingview_mcp/server.py`
+### `src/tradingview_mcp/server.py`
 
-### Change 1 — Default transport mode (commit `ccd149b`)
+#### Change 1 — Default transport mode (commit `ccd149b`)
 
 Changed the CLI argument default from `stdio` to `sse`.
 
@@ -26,7 +26,7 @@ default="sse",
 
 ---
 
-### Change 2 — Transport protocol (commit `ccd149b`)
+#### Change 2 — Transport protocol (commit `ccd149b`)
 
 Switched the HTTP transport from `streamable-http` to `sse`.
 
@@ -42,7 +42,7 @@ mcp.run(transport="sse")
 
 ---
 
-### Change 3 — Host binding as keyword argument (commit `4778237`)
+#### Change 3 — Host binding as keyword argument (commit `4778237`)
 
 Added `host="0.0.0.0"` as a keyword argument to the `FastMCP` initializer to bind the server to all network interfaces.
 
@@ -63,12 +63,37 @@ mcp = FastMCP(
 
 ---
 
+### `Dockerfile`
+
+#### Change 4 — Transport, host, and port in CMD (commits `748c8b4`, `928ecb2`)
+
+Updated the container startup command to use the correct transport and binding for Cloud Run.
+
+```dockerfile
+# Before
+EXPOSE 8000
+CMD ["streamable-http", "--host", "0.0.0.0", "--port", "8000"]
+
+# After
+ENV PORT=8080
+EXPOSE 8080
+CMD ["sse", "--host", "0.0.0.0", "--port", "8080"]
+```
+
+**Why:** Three issues fixed:
+- `streamable-http` is no longer a valid transport choice (removed in Change 1 above); replaced with `sse`.
+- Cloud Run expects containers to listen on port `8080` by default; updated `EXPOSE` and `ENV PORT` accordingly.
+- The port is hardcoded as `"8080"` in the JSON array `CMD` form because Docker's exec syntax does not expand shell variables — `"${PORT}"` would be passed as a literal string rather than the value of the environment variable.
+
+---
+
 ## Summary
 
-| Commit | Change | Purpose |
-|--------|--------|---------|
-| `ccd149b` | `default="sse"` in argparse | Default to HTTP transport for Cloud Run |
-| `ccd149b` | `transport="sse"` in `mcp.run()` | Use SSE instead of streamable-http |
-| `4778237` | `host="0.0.0.0"` as keyword arg in `FastMCP` | Bind to all interfaces for Cloud Run |
+| # | File | Commit | Change | Purpose |
+|---|------|--------|--------|---------|
+| 1 | `server.py` | `ccd149b` | `default="sse"` in argparse | Default to SSE transport for Cloud Run |
+| 2 | `server.py` | `ccd149b` | `transport="sse"` in `mcp.run()` | Replace streamable-http with SSE |
+| 3 | `server.py` | `4778237` | `host="0.0.0.0"` keyword arg in `FastMCP` | Bind to all interfaces for Cloud Run |
+| 4 | `Dockerfile` | `748c8b4`, `928ecb2` | `sse`, `0.0.0.0`, port `8080` in `CMD` | Fix transport, host, and port for Cloud Run |
 
 All other code — imports, tool handlers, resource routing, and business logic — is identical to upstream.
