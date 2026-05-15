@@ -129,6 +129,85 @@ for i in range(0, len(symbols), batch_size):
 
 ---
 
+## [2026-05-15] — Fix `volume_breakout_scan` Alphabet Bias on Large Exchanges
+
+### `src/tradingview_mcp/core/services/scanner_service.py`
+
+#### Change 6 — Full-universe batching and uncapped ranking in `volume_breakout_scan`
+
+Removed the hard-coded 500-symbol cap, raised batch size to 200, and dropped the `volume_strength = min(10, volume_ratio)` ceiling that created sort ties broken alphabetically.
+
+```python
+# Before
+screener = EXCHANGE_SCREENER.get(exchange, "crypto")
+volume_breakouts: List[dict] = []
+batch_size = 100
+
+for i in range(0, min(len(symbols), 500), batch_size):
+    batch = symbols[i : i + batch_size]
+    try:
+        analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
+    except Exception:
+        continue
+
+    for symbol, data in analysis.items():
+        try:
+            ...
+            if abs(price_change) >= price_change_min and volume_ratio >= volume_multiplier:
+                rsi = ind.get("RSI", 50)
+                bb_upper = ind.get("BB.upper", 0)
+                bb_lower = ind.get("BB.lower", 0)
+                volume_strength = min(10, volume_ratio)
+                ...
+
+volume_breakouts.sort(
+    key=lambda x: (x["volume_strength"], abs(x["changePercent"])),
+    reverse=True,
+)
+
+# After
+screener = EXCHANGE_SCREENER.get(exchange, "crypto")
+volume_breakouts: List[dict] = []
+batch_size = 200
+
+# Scan full symbol universe in batches; `limit` is applied only as a
+# post-filter cap on returned results (see end of function). Mirrors the
+# pattern established by fetch_bollinger_analysis / fetch_trending_analysis.
+for i in range(0, len(symbols), batch_size):
+    batch = symbols[i : i + batch_size]
+    try:
+        analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
+    except Exception:
+        continue  # skip failed batch, keep scanning the rest
+
+    for symbol, data in analysis.items():
+        try:
+            ...
+            if abs(price_change) >= price_change_min and volume_ratio >= volume_multiplier:
+                rsi = ind.get("RSI", 50)
+                bb_upper = ind.get("BB.upper", 0)
+                bb_lower = ind.get("BB.lower", 0)
+                # Use raw volume_ratio for ranking — previously capped at 10
+                # via `min(10, volume_ratio)`, which created ties at the
+                # ceiling and broke alphabetically.
+                volume_strength = volume_ratio
+                ...
+
+volume_breakouts.sort(
+    key=lambda x: (x["volume_ratio"], abs(x["changePercent"])),
+    reverse=True,
+)
+```
+
+**Why:** Same root cause as Change 5, with an additional sort-stability defect on top. Two compounding bugs:
+
+1. `range(0, min(len(symbols), 500), batch_size)` capped the scan at the first 500 alphabetically-sorted symbols. On NASDAQ (~3,000 symbols) and NYSE (~2,500), everything past index 500 was invisible to the scanner.
+2. `volume_strength = min(10, volume_ratio)` clamped the primary sort key at 10.0, so every symbol with `volume_ratio >= 10` tied at the ceiling. Python's stable sort then broke those ties by original insertion order — which was alphabetical batch order. A 20-result NASDAQ scan returned 20 symbols all starting with "A" (ATYR, AMPG, AGMH, ANY, APYX, ASBP, AKAN, AZI, …), all with `volume_strength: 2.0`, despite thousands of qualifying candidates further down the alphabet.
+
+The fix mirrors the established pattern from Change 5 — `for i in range(0, len(symbols), batch_size)` with `batch_size = 200` — and additionally drops the `min(10, …)` cap from the sort key. The `volume_strength` field is retained in the output dict (uncapped) for backwards compatibility with downstream consumers. Sort now keys on raw `volume_ratio`, breaking remaining ties by `abs(changePercent)`. `smart_volume_scan` inherits the fix automatically since it calls `volume_breakout_scan` internally; no separate change required.
+
+---
+
 ## Summary
 
 | # | File | Commit | Change | Purpose |
@@ -138,5 +217,6 @@ for i in range(0, len(symbols), batch_size):
 | 3 | `server.py` | `4778237` | `host="0.0.0.0"` keyword arg in `FastMCP` | Bind to all interfaces for Cloud Run |
 | 4 | `Dockerfile` | `748c8b4`, `928ecb2` | `sse`, `0.0.0.0`, port `8080` in `CMD` | Fix transport, host, and port for Cloud Run |
 | 5 | `screener_service.py` | `6acc410` | Full-universe batching in `fetch_bollinger_analysis` | Fix alphabet bias on large exchanges (NYSE, NASDAQ) |
+| 6 | `scanner_service.py` | _this PR_ | Full-universe batching + uncapped ranking in `volume_breakout_scan` | Fix alphabet bias on large exchanges (NASDAQ, NYSE) |
 
 All other code — imports, tool handlers, resource routing, and business logic — is identical to upstream.

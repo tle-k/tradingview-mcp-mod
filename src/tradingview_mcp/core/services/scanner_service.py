@@ -39,7 +39,7 @@ def volume_breakout_scan(
         limit:             Maximum results to return.
 
     Returns:
-        List of dicts sorted by volume_strength desc, then abs(changePercent) desc.
+        List of dicts sorted by volume_ratio desc, then abs(changePercent) desc.
     """
     symbols = load_symbols(exchange)
     if not symbols:
@@ -47,14 +47,17 @@ def volume_breakout_scan(
 
     screener = EXCHANGE_SCREENER.get(exchange, "crypto")
     volume_breakouts: List[dict] = []
-    batch_size = 100
+    batch_size = 200
 
-    for i in range(0, min(len(symbols), 500), batch_size):
+    # Scan full symbol universe in batches; `limit` is applied only as a
+    # post-filter cap on returned results (see end of function). Mirrors the
+    # pattern established by fetch_bollinger_analysis / fetch_trending_analysis.
+    for i in range(0, len(symbols), batch_size):
         batch = symbols[i : i + batch_size]
         try:
             analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
         except Exception:
-            continue
+            continue  # skip failed batch, keep scanning the rest
 
         for symbol, data in analysis.items():
             try:
@@ -82,7 +85,10 @@ def volume_breakout_scan(
                     rsi = ind.get("RSI", 50)
                     bb_upper = ind.get("BB.upper", 0)
                     bb_lower = ind.get("BB.lower", 0)
-                    volume_strength = min(10, volume_ratio)
+                    # Use raw volume_ratio for ranking — previously capped at 10
+                    # via `min(10, volume_ratio)`, which created ties at the
+                    # ceiling and broke alphabetically.
+                    volume_strength = volume_ratio
 
                     volume_breakouts.append(
                         {
@@ -105,7 +111,7 @@ def volume_breakout_scan(
                 continue
 
     volume_breakouts.sort(
-        key=lambda x: (x["volume_strength"], abs(x["changePercent"])),
+        key=lambda x: (x["volume_ratio"], abs(x["changePercent"])),
         reverse=True,
     )
     return volume_breakouts[:limit]
