@@ -6,10 +6,11 @@ They have zero dependency on the MCP layer and are independently testable.
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from tradingview_mcp.core.services.coinlist import load_symbols
 from tradingview_mcp.core.services.indicators import compute_metrics
+from tradingview_mcp.core.services.proxy_manager import get_proxy, is_proxy_configured
 from tradingview_mcp.core.utils.validators import EXCHANGE_SCREENER, is_stock_exchange
 
 try:
@@ -17,6 +18,20 @@ try:
     _TA_AVAILABLE = True
 except ImportError:
     _TA_AVAILABLE = False
+
+
+def _proxies_for(exchange: str) -> Optional[dict]:
+    """Return Webshare proxy dict for batch scans on stock exchanges; None otherwise.
+
+    Stock exchanges (NASDAQ, NYSE) require ~14-29 batches per full-universe scan,
+    which trips TradingView rate-limits from a single Cloud Run egress IP. Routing
+    these scans through Webshare's rotating proxy pool distributes the load.
+    Crypto and single-symbol calls don't hit the limit and skip the proxy to
+    preserve bandwidth.
+    """
+    if is_stock_exchange(exchange) and is_proxy_configured():
+        return get_proxy()
+    return None
 
 
 # ── Volume breakout ────────────────────────────────────────────────────────────
@@ -48,11 +63,14 @@ def volume_breakout_scan(
     screener = EXCHANGE_SCREENER.get(exchange, "crypto")
     volume_breakouts: List[dict] = []
     batch_size = 200
+    proxies = _proxies_for(exchange)
 
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i : i + batch_size]
         try:
-            analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
+            analysis = get_multiple_analysis(
+                screener=screener, interval=timeframe, symbols=batch, proxies=proxies
+            )
         except Exception:
             continue
 
