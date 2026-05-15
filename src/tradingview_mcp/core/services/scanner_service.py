@@ -47,7 +47,7 @@ def volume_breakout_scan(
 
     screener = EXCHANGE_SCREENER.get(exchange, "crypto")
     volume_breakouts: List[dict] = []
-    batch_size = 100
+    batch_size = 200
 
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i : i + batch_size]
