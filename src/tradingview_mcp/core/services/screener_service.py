@@ -14,7 +14,10 @@ from tradingview_mcp.core.types import (
 )
 from tradingview_mcp.core.services.coinlist import load_symbols
 from tradingview_mcp.core.services.indicators import compute_metrics
-from tradingview_mcp.core.utils.validators import EXCHANGE_SCREENER, get_market_type, get_tv_exchange_prefix
+from tradingview_mcp.core.services.proxy_manager import get_proxy, is_proxy_configured
+from tradingview_mcp.core.utils.validators import (
+    EXCHANGE_SCREENER, get_market_type, get_tv_exchange_prefix, is_stock_exchange,
+)
 
 try:
     from tradingview_ta import get_multiple_analysis
@@ -28,6 +31,17 @@ try:
     _SCREENER_AVAILABLE = True
 except ImportError:
     _SCREENER_AVAILABLE = False
+
+
+def _proxies_for(exchange: str) -> Optional[dict]:
+    """Return Webshare proxy dict for batch scans on stock exchanges; None otherwise.
+
+    See scanner_service._proxies_for for full rationale. Mirrored here to keep
+    both services self-contained; could be lifted to a shared util later.
+    """
+    if is_stock_exchange(exchange) and is_proxy_configured():
+        return get_proxy()
+    return None
 
 
 # ── Bollinger / trending fetchers ──────────────────────────────────────────────
@@ -60,11 +74,14 @@ def fetch_bollinger_analysis(
     screener = EXCHANGE_SCREENER.get(exchange, "crypto")
     batch_size = 200
     rows: List[Row] = []
+    proxies = _proxies_for(exchange)
 
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i : i + batch_size]
         try:
-            analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
+            analysis = get_multiple_analysis(
+                screener=screener, interval=timeframe, symbols=batch, proxies=proxies
+            )
         except Exception:
             continue  # skip failed batch, keep scanning the rest
 
@@ -134,11 +151,14 @@ def fetch_trending_analysis(
     screener = EXCHANGE_SCREENER.get(exchange, "crypto")
     batch_size = 200
     all_coins: List[Row] = []
+    proxies = _proxies_for(exchange)
 
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i : i + batch_size]
         try:
-            analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
+            analysis = get_multiple_analysis(
+                screener=screener, interval=timeframe, symbols=batch, proxies=proxies
+            )
         except Exception:
             continue
 
@@ -444,7 +464,6 @@ def analyze_coin(
         compute_trade_setup,
         compute_trade_quality,
     )
-    from tradingview_mcp.core.utils.validators import is_stock_exchange
 
     if not _TA_AVAILABLE:
         return {"error": "tradingview_ta is missing; run `uv sync`."}
