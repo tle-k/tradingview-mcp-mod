@@ -129,6 +129,67 @@ for i in range(0, len(symbols), batch_size):
 
 ---
 
+## [2026-05-15] — Fix `volume_breakout_scan` Alphabet Bias on Large Exchanges
+
+### `src/tradingview_mcp/core/services/scanner_service.py`
+
+#### Change 6 — Full-universe batching in `volume_breakout_scan` (commits `709e03d`, `ba295d5`)
+
+Removed the 500-symbol hard cap on the batched scan loop and doubled `batch_size` from 100 to 200 to match the established `fetch_bollinger_analysis` pattern.
+
+```python
+# Before
+batch_size = 100
+
+for i in range(0, min(len(symbols), 500), batch_size):
+    batch = symbols[i : i + batch_size]
+
+# After
+batch_size = 200
+
+for i in range(0, len(symbols), batch_size):
+    batch = symbols[i : i + batch_size]
+```
+
+**Why:** Same alphabet-bias pathology as Change 5 — capping the iteration at 500 symbols meant the scan only ever covered roughly A–AT on NASDAQ (~5,700 symbols) and A–AT on NYSE (~2,800 symbols). Sort ties on `volume_strength` (capped at 10) were broken by alphabetical scan order, producing result sets clustered entirely in early-alphabet tickers regardless of actual volume strength. `smart_volume_scan` inherits the fix automatically since it calls `volume_breakout_scan` internally. The `batch_size` bump halves the number of `get_multiple_analysis` round trips per scan (NYSE ~14 batches, NASDAQ ~29 vs. prior 28/57), reducing rate-limit pressure. Tested on NASDAQ 15m — results now span the full alphabet.
+
+---
+
+## [2026-05-15] — Route Stock-Exchange Batch Scans Through Webshare Proxy
+
+### `src/tradingview_mcp/core/services/scanner_service.py` and `screener_service.py`
+
+#### Change 7 — Conditional proxy routing for stock-exchange batch scans (commits `01c352d`, `08d537e`)
+
+Added a `_proxies_for(exchange)` helper to both files and threaded a `proxies=` parameter into `get_multiple_analysis` calls in `volume_breakout_scan`, `fetch_bollinger_analysis`, and `fetch_trending_analysis`.
+
+```python
+# New helper (mirrored in both files)
+def _proxies_for(exchange: str) -> Optional[dict]:
+    """Return Webshare proxy dict for batch scans on stock exchanges; None otherwise."""
+    if is_stock_exchange(exchange) and is_proxy_configured():
+        return get_proxy()
+    return None
+
+# Before (in each batch loop)
+analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
+
+# After
+proxies = _proxies_for(exchange)  # computed once before the loop
+analysis = get_multiple_analysis(
+    screener=screener, interval=timeframe, symbols=batch, proxies=proxies
+)
+```
+
+**Why:** After Change 6 unbounded the universe traversal, full NASDAQ/NYSE scans fired 14–29 batches from a single Cloud Run egress IP in roughly 3 seconds. TradingView rate-limited the IP aggressively, returning empty/HTML bodies for most batches that failed `json.loads()` with `JSONDecodeError: Expecting value: line 1 column 1 (char 0)` — silently swallowed by the existing `except Exception: continue` and producing empty result sets. Diagnostic instrumentation confirmed every batch returned non-JSON after the first few. Webshare's 10-IP rotating residential proxy pool distributes batches across multiple egress points, avoiding the per-IP throttle. The fork already had `proxy_manager.py` plumbed in via `sentiment_service.py` for Reddit calls; this change extends the same pattern to the TradingView batch scans. Guards:
+
+- `is_stock_exchange(exchange)` — only proxies NYSE/NASDAQ/AMEX/EGX where the rate limit actually hits. Crypto scans (~4 batches max) skip the proxy to preserve the 1 GB/month bandwidth budget.
+- `is_proxy_configured()` — falls back to direct connection if Webshare env vars aren't set, so the code still works in dev/test environments.
+
+Single-symbol calls (`analyze_coin`, `volume_confirmation_analyze`, `run_multi_timeframe_analysis`) and small bounded scans (`scan_consecutive_candles` capped at 200 symbols) skip the proxy by design — they don't trigger rate limits and proxying would waste bandwidth. Tested on NASDAQ 15m, NYSE 15m/1D for both `volume_breakout_scan` and `bollinger_scan`: all return full-alphabet result sets on first call after container warm-up. Webshare dashboard confirmed +120 requests / +10 MB bandwidth across the test session.
+
+---
+
 ## Summary
 
 | # | File | Commit | Change | Purpose |
@@ -138,5 +199,7 @@ for i in range(0, len(symbols), batch_size):
 | 3 | `server.py` | `4778237` | `host="0.0.0.0"` keyword arg in `FastMCP` | Bind to all interfaces for Cloud Run |
 | 4 | `Dockerfile` | `748c8b4`, `928ecb2` | `sse`, `0.0.0.0`, port `8080` in `CMD` | Fix transport, host, and port for Cloud Run |
 | 5 | `screener_service.py` | `6acc410` | Full-universe batching in `fetch_bollinger_analysis` | Fix alphabet bias on large exchanges (NYSE, NASDAQ) |
+| 6 | `scanner_service.py` | `709e03d`, `ba295d5` | Full-universe batching + `batch_size=200` in `volume_breakout_scan` | Fix alphabet bias on large exchanges (NASDAQ, NYSE) |
+| 7 | `scanner_service.py`, `screener_service.py` | `01c352d`, `08d537e` | Route stock-exchange batch scans through Webshare proxy | Avoid TradingView per-IP rate limiting on full-universe scans |
 
 All other code — imports, tool handlers, resource routing, and business logic — is identical to upstream.
