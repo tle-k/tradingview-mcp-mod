@@ -41,6 +41,9 @@ def volume_breakout_scan(
     Returns:
         List of dicts sorted by volume_strength desc, then abs(changePercent) desc.
     """
+    import time
+    t_start = time.time()
+
     symbols = load_symbols(exchange)
     if not symbols:
         return []
@@ -49,12 +52,17 @@ def volume_breakout_scan(
     volume_breakouts: List[dict] = []
     batch_size = 200
 
+    print(f"[vbs] start exchange={exchange} tf={timeframe} symbols={len(symbols)} bs={batch_size}", flush=True)
+
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i : i + batch_size]
+        t_batch = time.time()
         try:
             analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
-        except Exception:
+        except Exception as exc:
+            print(f"[vbs] batch={i//batch_size} EXCEPTION {type(exc).__name__}: {exc}", flush=True)
             continue
+        print(f"[vbs] batch={i//batch_size} symbols={len(batch)} returned={len(analysis)} t={time.time()-t_batch:.2f}s total_elapsed={time.time()-t_start:.2f}s candidates={len(volume_breakouts)}", flush=True)
 
         for symbol, data in analysis.items():
             try:
@@ -108,6 +116,7 @@ def volume_breakout_scan(
         key=lambda x: (x["volume_strength"], abs(x["changePercent"])),
         reverse=True,
     )
+    print(f"[vbs] done elapsed={time.time()-t_start:.2f}s candidates={len(volume_breakouts)} returning={min(len(volume_breakouts), limit)}", flush=True)
     return volume_breakouts[:limit]
 
 
