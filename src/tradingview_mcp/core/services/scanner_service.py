@@ -49,7 +49,7 @@ def volume_breakout_scan(
     volume_breakouts: List[dict] = []
     batch_size = 100
 
-    for i in range(0, min(len(symbols), 500), batch_size):
+    for i in range(0, len(symbols), batch_size):
         batch = symbols[i : i + batch_size]
         try:
             analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
