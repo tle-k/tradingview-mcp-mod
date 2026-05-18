@@ -69,7 +69,11 @@ def volume_breakout_scan(
         batch = symbols[i : i + batch_size]
         try:
             analysis = get_multiple_analysis(
-                screener=screener, interval=timeframe, symbols=batch, proxies=proxies
+                screener=screener,
+                interval=timeframe,
+                symbols=batch,
+                proxies=proxies,
+                additional_indicators=["volume.SMA20"],
             )
         except Exception:
             continue
@@ -161,7 +165,12 @@ def volume_confirmation_analyze(
     screener = EXCHANGE_SCREENER.get(exchange, "crypto")
 
     try:
-        analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=[full_symbol])
+        analysis = get_multiple_analysis(
+            screener=screener,
+            interval=timeframe,
+            symbols=[full_symbol],
+            additional_indicators=["volume.SMA20"],
+        )
         if not analysis or full_symbol not in analysis:
             return {"error": f"No data found for {full_symbol}"}
 
