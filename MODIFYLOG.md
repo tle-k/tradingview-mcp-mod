@@ -256,6 +256,36 @@ Confirmed working for both `crypto` and `america` screeners. Local variable name
 
 ---
 
+## [2026-05-19] — Fix `volume_breakout_scan` Sort Key Using Capped Field
+
+### `src/tradingview_mcp/core/services/scanner_service.py`
+
+#### Change 9 — Sort by raw `volume_ratio` instead of capped `volume_strength` (commit `b37fdc8`)
+
+Changed the final sort key in `volume_breakout_scan` from the display-capped `volume_strength` (min 10) to the underlying raw `volume_ratio`.
+
+```python
+# Before
+volume_breakouts.sort(
+    key=lambda x: (x["volume_strength"], abs(x["changePercent"])),
+    reverse=True,
+)
+
+# After
+volume_breakouts.sort(
+    key=lambda x: (x["volume_ratio"], abs(x["changePercent"])),
+    reverse=True,
+)
+```
+
+**Why:** `volume_strength = min(10, volume_ratio)` is a display cap that mirrors the categorical 0-10 strength labels used in `volume_confirmation_analyze`. Using it as the sort key collapses every symbol with `volume_ratio >= 10` into a single priority tier, breaking ties on `abs(changePercent)` alone. A stock at 10.2x volume with a 5% move incorrectly outranks one at 47x volume with a 3% move — the opposite of what a "volume breakout scanner" should report.
+
+The bug was previously invisible: before Change 8 (commits `c9fdf56` / `dc7818d`, same-day), the `volume_ratio` calculation itself was broken — the `ind.get("volume.SMA20", 0)` lookup always returned `0`, falling through to `avg_estimate = volume / 2` and producing uniform `volume_ratio = 2.0` for every symbol. With a constant first sort key, the sort effectively ran on `abs(changePercent)` alone, masking the capped-sort defect. Once Change 8 made `volume_ratio` carry real signal, the cap began actively distorting ranking on any symbol exceeding 10x.
+
+Output schema unchanged: `volume_strength` remains in the returned dict, still 0-10. Only the internal ordering changes. Downstream consumers (`smart_volume_scan`, Memory.md, the HTML reference) require no updates. `smart_volume_scan` inherits the fix automatically since it calls `volume_breakout_scan` and only post-filters by RSI.
+
+---
+
 ## Summary
 
 | # | File | Commit | Change | Purpose |
@@ -268,5 +298,6 @@ Confirmed working for both `crypto` and `america` screeners. Local variable name
 | 6 | `scanner_service.py` | `709e03d`, `ba295d5` | Full-universe batching + `batch_size=200` in `volume_breakout_scan` | Fix alphabet bias on large exchanges (NASDAQ, NYSE) |
 | 7 | `scanner_service.py`, `screener_service.py` | `01c352d`, `08d537e` | Route stock-exchange batch scans through Webshare proxy | Avoid TradingView per-IP rate limiting on full-universe scans |
 | 8 | `scanner_service.py` | `c9fdf56`, `dc7818d` | Request and read `average_volume_30d_calc` in volume tools | Fix broken `volume_ratio` / `average_volume` in `volume_confirmation_analysis`, `volume_breakout_scanner`, `smart_volume_scanner` |
+| 9 | `scanner_service.py` | `b37fdc8` | Sort `volume_breakout_scan` by raw `volume_ratio` not capped `volume_strength` | Fix ranking distortion at the 10x ceiling on `volume_breakout_scanner` and `smart_volume_scanner` |
 
 All other code — imports, tool handlers, resource routing, and business logic — is identical to upstream.
