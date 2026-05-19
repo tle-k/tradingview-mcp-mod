@@ -62,8 +62,7 @@ from tradingview_mcp.core.services.backtest_service import (
 from tradingview_mcp.core.utils.validators import (
     sanitize_timeframe,
     sanitize_exchange,
-    normalize_tradingview_symbol,
-    normalize_yahoo_symbol,
+    get_tv_exchange_prefix,
 )
 
 try:
@@ -77,6 +76,7 @@ except ImportError:
 
 mcp = FastMCP(
     name="TradingView Multi-Market Screener",
+    host="0.0.0.0",
     instructions=(
         "Multi-market screener backed by TradingView. "
         "Supports crypto exchanges (KuCoin, Binance, Bybit, MEXC, etc.) and stock markets "
@@ -326,7 +326,7 @@ def multi_agent_analysis(symbol: str, exchange: str = "KUCOIN", timeframe: str =
     """
     exchange = sanitize_exchange(exchange, "KUCOIN")
     timeframe = sanitize_timeframe(timeframe, "15m")
-    full_symbol = normalize_tradingview_symbol(symbol, exchange)
+    full_symbol = symbol.upper() if ":" in symbol else f"{get_tv_exchange_prefix(exchange)}:{symbol.upper()}"
     return run_multi_agent_analysis(full_symbol, exchange, timeframe)
 
 
@@ -454,7 +454,7 @@ def multi_timeframe_analysis(symbol: str, exchange: str = "KUCOIN") -> dict:
         exchange: Exchange — crypto: KUCOIN, BINANCE, MEXC; stocks: EGX, BIST, NASDAQ, NYSE, AMEX, NYSEARCA, PCX, SSE, SZSE, TWSE, TPEX
     """
     exchange = sanitize_exchange(exchange, "KUCOIN")
-    full_symbol = normalize_tradingview_symbol(symbol, exchange)
+    full_symbol = symbol.upper() if ":" in symbol else f"{get_tv_exchange_prefix(exchange)}:{symbol.upper()}"
     return run_multi_timeframe_analysis(full_symbol, exchange)
 
 
@@ -617,7 +617,7 @@ def yahoo_price(symbol: str) -> dict:
     Args:
         symbol: Yahoo Finance symbol — e.g. AAPL, BTC-USD, SPY, ^GSPC, EURUSD=X, THYAO.IS
     """
-    return get_price(normalize_yahoo_symbol(symbol))
+    return get_price(symbol)
 
 
 @mcp.tool()
@@ -767,10 +767,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="TradingView Screener MCP server")
     parser.add_argument(
         "transport",
-        choices=["stdio", "streamable-http"],
-        default="stdio",
+        choices=["stdio", "sse"],
+        default="sse",
         nargs="?",
-        help="Transport (default stdio)",
+        help="Transport (default sse)",
     )
     parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
@@ -788,7 +788,7 @@ def main() -> None:
             mcp.settings.port = args.port
         except Exception:
             pass
-        mcp.run(transport="streamable-http")
+        mcp.run(transport="sse")
 
 
 if __name__ == "__main__":
