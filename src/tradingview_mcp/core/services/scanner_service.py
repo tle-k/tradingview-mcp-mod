@@ -54,7 +54,7 @@ def volume_breakout_scan(
         limit:             Maximum results to return.
 
     Returns:
-        List of dicts sorted by volume_strength desc, then abs(changePercent) desc.
+        List of dicts sorted by volume_ratio desc, then abs(changePercent) desc.
     """
     symbols = load_symbols(exchange)
     if not symbols:
@@ -127,7 +127,7 @@ def volume_breakout_scan(
                 continue
 
     volume_breakouts.sort(
-        key=lambda x: (x["volume_strength"], abs(x["changePercent"])),
+        key=lambda x: (x["volume_ratio"], abs(x["changePercent"])),
         reverse=True,
     )
     return volume_breakouts[:limit]
