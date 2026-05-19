@@ -83,7 +83,7 @@ def volume_breakout_scan(
                 volume = ind.get("volume", 0)
                 close = ind.get("close", 0)
                 open_price = ind.get("open", 0)
-                sma20_volume = ind.get("volume.SMA20", 0)
+                sma20_volume = ind.get("average_volume_30d_calc", 0)
 
                 if not all([volume, close, open_price]) or volume <= 0:
                     continue
@@ -179,7 +179,7 @@ def volume_confirmation_analyze(
         price_change = ((close - open_price) / open_price) * 100 if open_price > 0 else 0
         candle_range = ((high - low) / low) * 100 if low > 0 else 0
 
-        sma20_volume = ind.get("volume.SMA20", 0)
+        sma20_volume = ind.get("average_volume_30d_calc", 0)
         volume_ratio = volume / sma20_volume if sma20_volume > 0 else 1
 
         rsi = ind.get("RSI", 50)
