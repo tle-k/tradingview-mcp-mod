@@ -190,6 +190,72 @@ Single-symbol calls (`analyze_coin`, `volume_confirmation_analyze`, `run_multi_t
 
 ---
 
+## [2026-05-19] — Fix `volume_ratio` / `average_volume` in Volume Tools
+
+### `src/tradingview_mcp/core/services/scanner_service.py`
+
+#### Change 8 — Request and read `average_volume_30d_calc` for volume_ratio (commits `c9fdf56`, `dc7818d`)
+
+Two coordinated changes to make the volume_ratio calculation in `volume_breakout_scan` and `volume_confirmation_analyze` actually work:
+
+1. Changed read key at both sites from `ind.get("volume.SMA20", 0)` to `ind.get("average_volume_30d_calc", 0)` (commit `c9fdf56`).
+
+2. Added `additional_indicators=["average_volume_30d_calc"]` to both `get_multiple_analysis` call sites so the field is included in the response (commit `dc7818d`).
+
+```python
+# Before — volume_breakout_scan
+analysis = get_multiple_analysis(
+    screener=screener, interval=timeframe, symbols=batch, proxies=proxies
+)
+# ...
+sma20_volume = ind.get("volume.SMA20", 0)
+
+# After
+analysis = get_multiple_analysis(
+    screener=screener,
+    interval=timeframe,
+    symbols=batch,
+    proxies=proxies,
+    additional_indicators=["average_volume_30d_calc"],
+)
+# ...
+sma20_volume = ind.get("average_volume_30d_calc", 0)
+```
+
+```python
+# Before — volume_confirmation_analyze
+analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=[full_symbol])
+# ...
+sma20_volume = ind.get("volume.SMA20", 0)
+
+# After
+analysis = get_multiple_analysis(
+    screener=screener,
+    interval=timeframe,
+    symbols=[full_symbol],
+    additional_indicators=["average_volume_30d_calc"],
+)
+# ...
+sma20_volume = ind.get("average_volume_30d_calc", 0)
+```
+
+**Why:** The dict key `volume.SMA20` is not a valid TradingView scanner column and is not in `tradingview_ta`'s documented indicator list ([pastebin 1DjWv2Hd](https://pastebin.com/1DjWv2Hd)). It was never present in `get_multiple_analysis` response dicts, so `ind.get("volume.SMA20", 0)` always returned `0`. Downstream effects:
+
+- `volume_confirmation_analyze`: `volume_ratio` collapsed to the `else 1` branch, `average_volume` reported `0`, `signals[]` always empty.
+- `volume_breakout_scan`: fell through to `avg_estimate = volume/2`, producing uniform `volume_ratio = 2.0` for every symbol — trivially clearing the default `volume_multiplier=2.0` filter and reducing ranking to `abs(changePercent)` alone.
+
+`average_volume_30d_calc` is the correct field: present in TradingView's scanner field list (Average Volume, 30 day) and in `tradingview_ta`'s `additional_indicators` whitelist (pastebin line 63). It's not in the library's hardcoded default request set, so it must be explicitly requested via `additional_indicators` for the column to appear in the response.
+
+**A/B verified** against `tradingview-mcp` (upstream control). Examples after deploy:
+
+- `volume_confirmation_analysis(symbol="BINANCE:BTCUSDT", timeframe="1h")` — mod: `average_volume: 664.56`, `volume_ratio: 0.08`; upstream: `average_volume: 0`, `volume_ratio: 1`.
+- `volume_confirmation_analysis(symbol="NASDAQ:AAPL", timeframe="1d")` — mod: `average_volume: 46.8M`, `volume_ratio: 0.74`; upstream: `average_volume: 0`, `volume_ratio: 1`.
+- `volume_breakout_scanner(exchange="BINANCE", timeframe="15m", volume_multiplier=1.5, price_change_min=0.5)` — mod: 1 result with real `volume_ratio: 9.01`; upstream: 7 results all uniform `volume_ratio: 2.0`.
+
+Confirmed working for both `crypto` and `america` screeners. Local variable name `sma20_volume` retained to keep diff minimal; semantically it now holds a 30-day calendar average, not a 20-bar SMA. Bug existed identically in upstream `atilaahmettaner/tradingview-mcp`.
+
+---
+
 ## Summary
 
 | # | File | Commit | Change | Purpose |
@@ -201,5 +267,6 @@ Single-symbol calls (`analyze_coin`, `volume_confirmation_analyze`, `run_multi_t
 | 5 | `screener_service.py` | `6acc410` | Full-universe batching in `fetch_bollinger_analysis` | Fix alphabet bias on large exchanges (NYSE, NASDAQ) |
 | 6 | `scanner_service.py` | `709e03d`, `ba295d5` | Full-universe batching + `batch_size=200` in `volume_breakout_scan` | Fix alphabet bias on large exchanges (NASDAQ, NYSE) |
 | 7 | `scanner_service.py`, `screener_service.py` | `01c352d`, `08d537e` | Route stock-exchange batch scans through Webshare proxy | Avoid TradingView per-IP rate limiting on full-universe scans |
+| 8 | `scanner_service.py` | `c9fdf56`, `dc7818d` | Request and read `average_volume_30d_calc` in volume tools | Fix broken `volume_ratio` / `average_volume` in `volume_confirmation_analysis`, `volume_breakout_scanner`, `smart_volume_scanner` |
 
 All other code — imports, tool handlers, resource routing, and business logic — is identical to upstream.
