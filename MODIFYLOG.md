@@ -286,6 +286,49 @@ Output schema unchanged: `volume_strength` remains in the returned dict, still 0
 
 ---
 
+## [2026-05-20] — Route `multi_timeframe_analysis` Through Webshare Proxy
+
+### `src/tradingview_mcp/core/services/screener_service.py`
+
+#### Change 10 — Proxy the per-timeframe loop in `run_multi_timeframe_analysis` (commit `72b3a921`)
+
+Added `proxies = _proxies_for(exchange)` before the timeframe loop and threaded `proxies=proxies` into each per-TF `get_multiple_analysis` call.
+
+```python
+# Before
+    tf_results: dict = {}
+    alignment_scores: list[int] = []
+
+    for tf in timeframes:
+        try:
+            analysis = get_multiple_analysis(screener=screener, interval=tf, symbols=[symbol])
+            if symbol not in analysis or analysis[symbol] is None:
+
+# After
+    tf_results: dict = {}
+    alignment_scores: list[int] = []
+    proxies = _proxies_for(exchange)
+
+    for tf in timeframes:
+        try:
+            analysis = get_multiple_analysis(
+                screener=screener, interval=tf, symbols=[symbol], proxies=proxies
+            )
+            if symbol not in analysis or analysis[symbol] is None:
+```
+
+**Why:** The function fires 5 sequential `get_multiple_analysis` calls (1W/1D/4h/1h/15m) for a single symbol. Although each call is single-symbol, the 5-request burst from one Cloud Run egress IP trips TradingView's per-IP rate limit on stock exchanges — the same pathology that Change 7 addressed for batch scans. The rate limit was intermittent but consistent enough to fail multi-timeframe calls on NASDAQ/NYSE during repeated queries in quick succession, returning `JSONDecodeError: Expecting value: line 1 column 1 (char 0)` on all 5 timeframes.
+
+The `_proxies_for(exchange)` helper, already in place for Change 7, preserves the bandwidth budget by returning `None` for crypto exchanges (single symbols, no bulk scanning) and returning the Webshare pool only for stock exchanges (where the burst is long enough to trigger the limit). Webshare's rotating residential IPs distribute the 5 sequential calls across different egress points, avoiding the per-IP threshold.
+
+**A/B verified** with upstream control (`tradingview-mcp` on `tradingview-mcp-61567401482.us-central1.run.app`):
+- Upstream (unproxied): Calls 1–3 (NASDAQ:AAPL, NASDAQ:NVDA, NYSE:JPM) returned fully populated timeframes. Call 4 (NYSE:BAC) and Call 5 (NASDAQ:MSFT) failed: all 5 timeframes returned `"error": "Expecting value: line 1 column 1 (char 0)"` — rate limit signature.
+- Mod (proxied): All 10 calls (original 5 + 5 fresh symbols: TSLA, AMD, GE, EGX:ETEL, and a bad EGX symbol) completed successfully with 5/5 populated timeframes each, except the bad symbol which correctly returned "No data" errors.
+
+The fix uses the same `_proxies_for` guard and pattern established in Change 7; Change 7's documented bandwidth-budget concern applies equally here (Webshare $19/mo plan = 1 GB/month; each proxied multi-timeframe call ~40 KB, supporting ~25k stock multi-timeframe analyses per month within budget).
+
+---
+
 ## Summary
 
 | # | File | Commit | Change | Purpose |
@@ -299,5 +342,6 @@ Output schema unchanged: `volume_strength` remains in the returned dict, still 0
 | 7 | `scanner_service.py`, `screener_service.py` | `01c352d`, `08d537e` | Route stock-exchange batch scans through Webshare proxy | Avoid TradingView per-IP rate limiting on full-universe scans |
 | 8 | `scanner_service.py` | `c9fdf56`, `dc7818d` | Request and read `average_volume_30d_calc` in volume tools | Fix broken `volume_ratio` / `average_volume` in `volume_confirmation_analysis`, `volume_breakout_scanner`, `smart_volume_scanner` |
 | 9 | `scanner_service.py` | `b37fdc8` | Sort `volume_breakout_scan` by raw `volume_ratio` not capped `volume_strength` | Fix ranking distortion at the 10x ceiling on `volume_breakout_scanner` and `smart_volume_scanner` |
+| 10 | `screener_service.py` | `72b3a921` | Route `multi_timeframe_analysis` per-TF calls through Webshare proxy | Avoid TradingView per-IP rate limiting on 5-timeframe burst calls |
 
 All other code — imports, tool handlers, resource routing, and business logic — is identical to upstream.
