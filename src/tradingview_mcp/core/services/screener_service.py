@@ -791,10 +791,13 @@ def run_multi_timeframe_analysis(
 
     tf_results: dict = {}
     alignment_scores: list[int] = []
+    proxies = _proxies_for(exchange)
 
     for tf in timeframes:
         try:
-            analysis = get_multiple_analysis(screener=screener, interval=tf, symbols=[symbol])
+            analysis = get_multiple_analysis(
+                screener=screener, interval=tf, symbols=[symbol], proxies=proxies
+            )
             if symbol not in analysis or analysis[symbol] is None:
                 tf_results[tf] = {"error": f"No data for {tf}"}
                 continue
