@@ -28,7 +28,7 @@ from tradingview_mcp.core.services.indicators_calc import (
 _UA       = "tradingview-mcp/0.7.0 backtest-bot"
 _YF_BASE  = "https://query1.finance.yahoo.com/v8/finance/chart"
 
-_VALID_PERIODS   = {"1mo", "3mo", "6mo", "1y", "2y"}
+_VALID_PERIODS   = {"1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"}
 _VALID_INTERVALS = {"1d", "1h"}
 
 # Annualization factor for Sharpe ratio
@@ -478,58 +478,14 @@ def compare_strategies(
 
 # ─── Public API: walk_forward_backtest ────────────────────────────────────────
 
-def walk_forward_backtest(
-    symbol: str,
-    strategy: str,
-    period: str = "2y",
-    initial_capital: float = 10_000.0,
-    commission_pct: float = 0.1,
-    slippage_pct: float = 0.05,
-    n_splits: int = 3,
-    train_ratio: float = 0.7,
-    interval: str = "1d",
-) -> dict:
-    """
-    Walk-forward backtesting — detect overfitting via train/test splits.
-
-    Splits full history into n_splits folds. Each fold:
-      - Train (70%): in-sample strategy simulation
-      - Test  (30%): out-of-sample forward validation
-
-    Robustness score (test_return / train_return):
-      >= 0.8  → ROBUST    (no overfitting)
-      >= 0.5  → MODERATE  (some degradation)
-      >= 0.2  → WEAK      (likely overfitted)
-      < 0.2   → OVERFITTED (do not trade live)
-    """
-    strategy = strategy.lower().strip()
-    period   = period.lower().strip()
-    interval = interval.lower().strip()
-
-    if strategy not in _STRATEGY_MAP:
-        return {"error": f"Unknown strategy '{strategy}'. Choose: {', '.join(_STRATEGY_MAP)}"}
-    if period not in _VALID_PERIODS:
-        return {"error": f"Invalid period '{period}'. Choose: {', '.join(_VALID_PERIODS)}"}
-    if interval not in _VALID_INTERVALS:
-        return {"error": f"Invalid interval '{interval}'. Choose: 1d or 1h"}
-    if not (2 <= n_splits <= 10):
-        return {"error": "n_splits must be between 2 and 10"}
-    if not (0.5 <= train_ratio <= 0.9):
-        return {"error": "train_ratio must be between 0.5 and 0.9"}
-
-    try:
-        candles = _fetch_ohlcv(symbol, period, interval)
-    except Exception as e:
-        return {"error": f"Failed to fetch data for '{symbol}': {e}"}
-
-    min_bars = max(60, n_splits * 20)
-    if len(candles) < min_bars:
-        return {"error": f"Not enough data ({len(candles)} bars) for {n_splits} splits. Try longer period."}
-
-    fn        = _STRATEGY_MAP[strategy]
+def _run_wf_folds(
+    candles, fn, n_splits, train_ratio,
+    commission_pct, slippage_pct, initial_capital, interval,
+):
+    """Run walk-forward folds for a given n_splits on already-fetched candles.
+    Pure computation — no network. Returns (folds, all_test_trades)."""
     fold_size = len(candles) // n_splits
-
-    folds: list[dict]   = []
+    folds: list[dict] = []
     all_test_trades: list[dict] = []
 
     for fold_i in range(n_splits):
@@ -578,6 +534,85 @@ def walk_forward_backtest(
             "fold_robustness_score": fold_rob,
         })
 
+    return folds, all_test_trades
+
+
+def walk_forward_backtest(
+    symbol: str,
+    strategy: str,
+    period: str = "2y",
+    initial_capital: float = 10_000.0,
+    commission_pct: float = 0.1,
+    slippage_pct: float = 0.05,
+    n_splits: int = 3,
+    train_ratio: float = 0.7,
+    interval: str = "1d",
+    min_oos_trades: int = 8,
+    auto_widen: bool = True,
+) -> dict:
+    """
+    Walk-forward backtesting — detect overfitting via train/test splits.
+
+    Robustness score (avg of per-fold test_return / train_return):
+      >= 0.8 ROBUST · >= 0.5 MODERATE · >= 0.2 WEAK · < 0.2 OVERFITTED
+
+    Statistical-significance gate (NEW): the score is only meaningful if enough
+    out-of-sample trades occurred. Slow signals on short daily test windows
+    often fire 0–2 times, producing a score driven by noise. When total OOS
+    trades < `min_oos_trades`, verdict is INSUFFICIENT DATA and the score must
+    NOT be used as a hard reject.
+
+    `auto_widen` (default True): if the requested n_splits yields too few OOS
+    trades, retry with progressively fewer folds (larger test windows) down to a
+    single holdout, reusing the same fetched data. To gain OOS trades WITHOUT
+    losing fold count, pass a longer `period` (e.g. "5y") — preferred over
+    collapsing folds, which removes the cross-regime check walk-forward provides.
+    """
+    strategy = strategy.lower().strip()
+    period   = period.lower().strip()
+    interval = interval.lower().strip()
+
+    if strategy not in _STRATEGY_MAP:
+        return {"error": f"Unknown strategy '{strategy}'. Choose: {', '.join(_STRATEGY_MAP)}"}
+    if period not in _VALID_PERIODS:
+        return {"error": f"Invalid period '{period}'. Choose: {', '.join(_VALID_PERIODS)}"}
+    if interval not in _VALID_INTERVALS:
+        return {"error": f"Invalid interval '{interval}'. Choose: 1d or 1h"}
+    if not (1 <= n_splits <= 10):
+        return {"error": "n_splits must be between 1 and 10"}
+    if not (0.5 <= train_ratio <= 0.9):
+        return {"error": "train_ratio must be between 0.5 and 0.9"}
+    if min_oos_trades < 1:
+        return {"error": "min_oos_trades must be >= 1"}
+
+    try:
+        candles = _fetch_ohlcv(symbol, period, interval)
+    except Exception as e:
+        return {"error": f"Failed to fetch data for '{symbol}': {e}"}
+
+    if len(candles) < 60:
+        return {"error": f"Not enough data ({len(candles)} bars). Try a longer period."}
+
+    fn = _STRATEGY_MAP[strategy]
+
+    # Adaptive fold reduction: try requested n_splits, then shrink folds
+    # (bigger test windows) until OOS trade count clears the gate or we reach a
+    # single holdout. Pure recompute on already-fetched candles — no re-fetch.
+    widen_trail: list[dict] = []
+    used_splits = n_splits
+    trial       = n_splits
+    folds, all_test_trades = [], []
+    while trial >= 1:
+        f, t = _run_wf_folds(candles, fn, trial, train_ratio,
+                             commission_pct, slippage_pct, initial_capital, interval)
+        widen_trail.append({"n_splits": trial, "valid_folds": len(f), "oos_trades": len(t)})
+        folds, all_test_trades, used_splits = f, t, trial
+        if f and len(t) >= min_oos_trades:
+            break
+        if not auto_widen:
+            break
+        trial -= 1
+
     if not folds:
         return {"error": "Could not generate any valid folds. Try a longer period or fewer splits."}
 
@@ -585,8 +620,18 @@ def walk_forward_backtest(
     avg_test   = round(statistics.mean(f["test_return_pct"]  for f in folds), 2)
     avg_robust = round(statistics.mean(f["fold_robustness_score"] for f in folds), 2)
     oos_m      = _calc_metrics(all_test_trades, initial_capital, interval)
+    oos_trades = oos_m["total_trades"]
 
-    if avg_robust >= 0.8:
+    data_sufficient = oos_trades >= min_oos_trades
+
+    if not data_sufficient:
+        verdict = (
+            f"INSUFFICIENT DATA — only {oos_trades} out-of-sample trade(s) across "
+            f"{len(folds)} fold(s); robustness score is not statistically meaningful. "
+            f"Treat as UNTESTED: size down or pass. Do NOT hard-reject on this score. "
+            f"For more OOS trades, retry with a longer period (e.g. 5y)."
+        )
+    elif avg_robust >= 0.8:
         verdict = "ROBUST — strategy performs consistently in-sample and out-of-sample"
     elif avg_robust >= 0.5:
         verdict = "MODERATE — some degradation out-of-sample, use with caution"
@@ -604,14 +649,19 @@ def walk_forward_backtest(
         "timeframe":               "Hourly (1h)" if interval == "1h" else "Daily (1d)",
         "total_candles":           len(candles),
         "n_splits":                n_splits,
+        "effective_n_splits":      used_splits,
         "train_ratio":             train_ratio,
+        "min_oos_trades":          min_oos_trades,
+        "auto_widen":              auto_widen,
+        "data_sufficient":         data_sufficient,
+        "widen_trail":             widen_trail,
         "date_from":               candles[0]["date"],
         "date_to":                 candles[-1]["date"],
         "avg_train_return_pct":    avg_train,
         "avg_test_return_pct":     avg_test,
         "robustness_score":        avg_robust,
         "verdict":                 verdict,
-        "oos_total_trades":        oos_m["total_trades"],
+        "oos_total_trades":        oos_trades,
         "oos_win_rate_pct":        oos_m["win_rate_pct"],
         "oos_sharpe_ratio":        oos_m["sharpe_ratio"],
         "oos_max_drawdown_pct":    oos_m["max_drawdown_pct"],
