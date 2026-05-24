@@ -184,10 +184,12 @@ def _run_donchian(candles, period=20, **_):
         if dc["upper"][i] is None:
             continue
         price, date = candles[i]["close"], candles[i]["date"]
-        prev_high   = highs[i - 1]
-        if position is None and dc["upper"][i - 1] is not None and prev_high > dc["upper"][i - 1]:
+        # Breakout vs the PRIOR N-bar channel (i-1). Never compare against the
+        # current bar's own channel — it includes this bar's high/low, so the
+        # condition can never be satisfied (the original zero-trade bug).
+        if position is None and dc["upper"][i - 1] is not None and price > dc["upper"][i - 1]:
             position = {"entry_date": date, "entry_price": price, "strategy": "donchian"}
-        elif position is not None and dc["lower"][i] is not None and price < dc["lower"][i]:
+        elif position is not None and dc["lower"][i - 1] is not None and price < dc["lower"][i - 1]:
             trades.append({**position, "exit_date": date, "exit_price": price})
             position = None
     return trades
@@ -599,19 +601,28 @@ def walk_forward_backtest(
     # (bigger test windows) until OOS trade count clears the gate or we reach a
     # single holdout. Pure recompute on already-fetched candles — no re-fetch.
     widen_trail: list[dict] = []
-    used_splits = n_splits
-    trial       = n_splits
-    folds, all_test_trades = [], []
+    best = None  # (oos_count, folds, test_trades, n_splits) — most OOS trades seen
+    trial = n_splits
+    cleared = False
+    folds, all_test_trades, used_splits = [], [], n_splits
     while trial >= 1:
         f, t = _run_wf_folds(candles, fn, trial, train_ratio,
                              commission_pct, slippage_pct, initial_capital, interval)
         widen_trail.append({"n_splits": trial, "valid_folds": len(f), "oos_trades": len(t)})
-        folds, all_test_trades, used_splits = f, t, trial
+        if f and (best is None or len(t) > best[0]):
+            best = (len(t), f, t, trial)  # strict >: ties keep higher fold count (more regime coverage)
         if f and len(t) >= min_oos_trades:
+            folds, all_test_trades, used_splits = f, t, trial
+            cleared = True
             break
         if not auto_widen:
             break
         trial -= 1
+
+    if not cleared and best is not None:
+        # No fold count cleared the gate — keep the trial with the most OOS trades
+        # (the most informative sample), not whichever was tried last.
+        _, folds, all_test_trades, used_splits = best
 
     if not folds:
         return {"error": "Could not generate any valid folds. Try a longer period or fewer splits."}
