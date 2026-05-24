@@ -329,6 +329,100 @@ The fix uses the same `_proxies_for` guard and pattern established in Change 7; 
 
 ---
 
+## [2026-05-23] — Gate Walk-Forward Verdict on OOS Trade Count + Adaptive Fold Widening
+
+### `src/tradingview_mcp/core/services/backtest_service.py`
+
+#### Change 11 — Statistical-significance gate + adaptive fold reduction in `walk_forward_backtest` (commit `5350008`)
+
+Four coordinated edits so the robustness score is no longer treated as a hard pass/fail when it is computed from too few out-of-sample trades to be meaningful. The per-fold loop was extracted into a reusable `_run_wf_folds()` helper, and `walk_forward_backtest` was rebuilt around it.
+
+1. Extended `_VALID_PERIODS` with `5y` and `10y`.
+
+```python
+# Before
+_VALID_PERIODS   = {"1mo", "3mo", "6mo", "1y", "2y"}
+
+# After
+_VALID_PERIODS   = {"1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"}
+```
+
+2. Lowered the `n_splits` floor from 2 to 1 (a single labeled holdout is now a valid last-resort fallback).
+
+```python
+# Before
+    if not (2 <= n_splits <= 10):
+        return {"error": "n_splits must be between 2 and 10"}
+
+# After
+    if not (1 <= n_splits <= 10):
+        return {"error": "n_splits must be between 1 and 10"}
+```
+
+3. Added two parameters — `min_oos_trades: int = 8` and `auto_widen: bool = True` — and replaced the single-pass fold loop with an adaptive loop that retries at progressively fewer folds (larger test windows) until the out-of-sample trade count clears the gate or a single holdout is reached. The recompute reuses the already-fetched candles — no extra network calls.
+
+```python
+# Before (single inline pass)
+    fn        = _STRATEGY_MAP[strategy]
+    fold_size = len(candles) // n_splits
+    folds, all_test_trades = [], []
+    for fold_i in range(n_splits):
+        ...   # fold built inline
+
+# After (adaptive, via _run_wf_folds helper)
+    fn = _STRATEGY_MAP[strategy]
+    widen_trail: list[dict] = []
+    used_splits = n_splits
+    trial       = n_splits
+    folds, all_test_trades = [], []
+    while trial >= 1:
+        f, t = _run_wf_folds(candles, fn, trial, train_ratio,
+                             commission_pct, slippage_pct, initial_capital, interval)
+        widen_trail.append({"n_splits": trial, "valid_folds": len(f), "oos_trades": len(t)})
+        folds, all_test_trades, used_splits = f, t, trial
+        if f and len(t) >= min_oos_trades:
+            break
+        if not auto_widen:
+            break
+        trial -= 1
+```
+
+4. Added a statistical-significance verdict tier. When total OOS trades fall below `min_oos_trades`, the verdict is `INSUFFICIENT DATA` and the score must not be used as a hard reject. The four robustness bands now sit behind this gate.
+
+```python
+# Before
+    if avg_robust >= 0.8:
+        verdict = "ROBUST — ..."
+    elif avg_robust >= 0.5:
+        verdict = "MODERATE — ..."
+    elif avg_robust >= 0.2:
+        verdict = "WEAK — ..."
+    else:
+        verdict = "OVERFITTED — ..."
+
+# After
+    data_sufficient = oos_trades >= min_oos_trades
+    if not data_sufficient:
+        verdict = ("INSUFFICIENT DATA — only N out-of-sample trade(s) ...; "
+                   "Treat as UNTESTED: size down or pass. Do NOT hard-reject ...")
+    elif avg_robust >= 0.8:
+        verdict = "ROBUST — ..."
+    elif avg_robust >= 0.5:
+        verdict = "MODERATE — ..."
+    elif avg_robust >= 0.2:
+        verdict = "WEAK — ..."
+    else:
+        verdict = "OVERFITTED — ..."
+```
+
+New output fields: `effective_n_splits`, `min_oos_trades`, `auto_widen`, `data_sufficient`, `widen_trail`.
+
+**Why:** The robustness score is `avg(per-fold test_return / train_return)`. On a 2y daily history split into 3 folds with a 70/30 train/test ratio, each test window is ~50 trading days. Slow signals (Bollinger mean-reversion, MACD crossover) fire 0–2 times in a window that short, so the score was driven by one or two trades — pure noise — and the degenerate branches (`train_return == 0` → `1.0` or `0.0`; a single losing OOS trade flooring the ratio at `−1.0`) let that noise masquerade as a confident verdict. Observed live: NSC Bollinger scored `−0.33` and RBA Bollinger `−0.03` across folds with 0–2 OOS trades, both hard-rejected at Stage 6 despite intact weekly structure — the gate was firing on sample-size artifacts, not genuine lack of edge. The fix separates "no edge" from "not enough data to tell": a genuine fail *with* an adequate trade count still returns OVERFITTED/WEAK, but a thin sample now returns INSUFFICIENT DATA (size down or pass). `auto_widen` and the new `5y`/`10y` periods are the levers for accumulating more OOS trades — a longer period is preferred because it adds trades while preserving fold count (cross-regime coverage), whereas collapsing folds trades that coverage away.
+
+The per-fold ratio math in `_run_wf_folds` is intentionally unchanged — the gate sits in front of it. Backward-compatible: the two new parameters have safe defaults, so existing callers and the `server.py` tool surface are unaffected (exposing them per-call would be a separate edit). Merged to `main` (branch `fix/wf-insufficient-data-gate` deleted post-merge); takes effect on the live MCP server after Cloud Run redeploy. Not present in upstream `atilaahmettaner/tradingview-mcp`.
+
+---
+
 ## Summary
 
 | # | File | Commit | Change | Purpose |
@@ -343,5 +437,6 @@ The fix uses the same `_proxies_for` guard and pattern established in Change 7; 
 | 8 | `scanner_service.py` | `c9fdf56`, `dc7818d` | Request and read `average_volume_30d_calc` in volume tools | Fix broken `volume_ratio` / `average_volume` in `volume_confirmation_analysis`, `volume_breakout_scanner`, `smart_volume_scanner` |
 | 9 | `scanner_service.py` | `b37fdc8` | Sort `volume_breakout_scan` by raw `volume_ratio` not capped `volume_strength` | Fix ranking distortion at the 10x ceiling on `volume_breakout_scanner` and `smart_volume_scanner` |
 | 10 | `screener_service.py` | `72b3a921` | Route `multi_timeframe_analysis` per-TF calls through Webshare proxy | Avoid TradingView per-IP rate limiting on 5-timeframe burst calls |
+| 11 | `backtest_service.py` | `5350008` | `min_oos_trades` gate + `auto_widen` adaptive folds + `5y`/`10y` periods in `walk_forward_backtest` | Stop hard-rejecting candidates on statistically meaningless robustness scores from thin OOS samples |
 
 All other code — imports, tool handlers, resource routing, and business logic — is identical to upstream.
