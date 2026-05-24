@@ -421,6 +421,40 @@ New output fields: `effective_n_splits`, `min_oos_trades`, `auto_widen`, `data_s
 
 The per-fold ratio math in `_run_wf_folds` is intentionally unchanged — the gate sits in front of it. Backward-compatible: the two new parameters have safe defaults, so existing callers and the `server.py` tool surface are unaffected (exposing them per-call would be a separate edit). Merged to `main` (branch `fix/wf-insufficient-data-gate` deleted post-merge); takes effect on the live MCP server after Cloud Run redeploy. Not present in upstream `atilaahmettaner/tradingview-mcp`.
 
+#### Change 11 (follow-up) — Donchian engine fix + keep-richest-sample on widen (commit `733fb3b`, 2026-05-24)
+
+Two further fixes to the same file, surfaced while validating Change 11 by re-running the Stage 6 candidates on the corrected gate.
+
+5. **`_run_donchian` was structurally dead — zero trades on every symbol.** Entry compared `highs[i-1] > dc["upper"][i-1]` and exit compared `close[i] < dc["lower"][i]`, but `calc_donchian` builds each channel *inclusive of the current bar*, so `highs[i-1] <= upper[i-1]` and `close[i] >= lower[i]` always hold — neither condition can ever be satisfied. Verified live: NVDA (+107% over 2y) returned 0 donchian trades. Now uses the standard close-based breakout against the **prior** bar's channel.
+
+```python
+# Before
+        prev_high   = highs[i - 1]
+        if position is None and dc["upper"][i - 1] is not None and prev_high > dc["upper"][i - 1]:
+            ...
+        elif position is not None and dc["lower"][i] is not None and price < dc["lower"][i]:
+
+# After
+        if position is None and dc["upper"][i - 1] is not None and price > dc["upper"][i - 1]:
+            ...
+        elif position is not None and dc["lower"][i - 1] is not None and price < dc["lower"][i - 1]:
+```
+
+6. **`auto_widen` kept the last fold count tried, not the one with the most OOS trades.** Widening is non-monotonic (fold boundaries shift which trades land in test windows), so a 3-fold trial can yield more OOS trades than the 1-fold fallback yet be discarded. Now tracks `best` (max OOS trades; ties keep the higher fold count for regime coverage) and falls back to it when no fold count clears the gate.
+
+```python
+# After (replaces the prior keep-last assignment)
+    best = None  # (oos_count, folds, test_trades, n_splits) — most OOS trades seen
+    ...
+        if f and (best is None or len(t) > best[0]):
+            best = (len(t), f, t, trial)
+    ...
+    if not cleared and best is not None:
+        _, folds, all_test_trades, used_splits = best
+```
+
+**Why:** Change 11's PB2-matched validation strategy is `donchian`, so a dead donchian engine meant PB2 squeeze breakouts had *no* working validator — every PB2 walk-forward returned INSUFFICIENT DATA as an artifact, not a finding. With the engine fixed, donchian fires (e.g. NSC 0 → 2 OOS trades) and Stage 6 can actually judge PB2 setups. The keep-richest-sample refinement ensures the reported (and gated) result uses the most informative fold count available. Per-fold robustness math still unchanged. Verified offline (donchian fires on a synthetic breakout while the old logic fired zero; the widen loop retains the richest sample across monotonic and non-monotonic cases) and live post-redeploy. Merged to `main` (branch `fix/donchian-engine-and-widen-best-fold` deleted post-merge).
+
 ---
 
 ## Summary
@@ -437,6 +471,6 @@ The per-fold ratio math in `_run_wf_folds` is intentionally unchanged — the ga
 | 8 | `scanner_service.py` | `c9fdf56`, `dc7818d` | Request and read `average_volume_30d_calc` in volume tools | Fix broken `volume_ratio` / `average_volume` in `volume_confirmation_analysis`, `volume_breakout_scanner`, `smart_volume_scanner` |
 | 9 | `scanner_service.py` | `b37fdc8` | Sort `volume_breakout_scan` by raw `volume_ratio` not capped `volume_strength` | Fix ranking distortion at the 10x ceiling on `volume_breakout_scanner` and `smart_volume_scanner` |
 | 10 | `screener_service.py` | `72b3a921` | Route `multi_timeframe_analysis` per-TF calls through Webshare proxy | Avoid TradingView per-IP rate limiting on 5-timeframe burst calls |
-| 11 | `backtest_service.py` | `5350008` | `min_oos_trades` gate + `auto_widen` adaptive folds + `5y`/`10y` periods in `walk_forward_backtest` | Stop hard-rejecting candidates on statistically meaningless robustness scores from thin OOS samples |
+| 11 | `backtest_service.py` | `5350008`, `733fb3b` | `min_oos_trades` gate + `auto_widen` adaptive folds (keep richest sample) + `5y`/`10y` periods in `walk_forward_backtest`; fixed dead `_run_donchian` breakout engine | Stop hard-rejecting on noise-level OOS samples; make Donchian (the PB2-matched strategy) actually fire |
 
 All other code — imports, tool handlers, resource routing, and business logic — is identical to upstream.
