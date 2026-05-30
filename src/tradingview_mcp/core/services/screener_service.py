@@ -3,11 +3,18 @@ Screener Service — low-level data-fetching helpers for TradingView analysis.
 
 All functions call TradingView APIs and return normalised Row / MultiRow lists.
 They are intentionally free of MCP concerns so they can be unit-tested directly.
+
+Batched scanners (``fetch_trending_analysis``) raise
+:class:`~tradingview_mcp.core.errors.BatchExecutionError` when every upstream
+batch fails. The MCP tool wrapper layer converts that to a structured error
+envelope so callers can distinguish "no matches today" from "upstream cliff".
 """
 from __future__ import annotations
 
+import sys
 from typing import Any, List, Optional
 
+from tradingview_mcp.core.errors import BatchExecutionError
 from tradingview_mcp.core.types import (
     IndicatorMap, MultiRow, Row,
     percent_change, tf_to_tv_resolution,
@@ -137,11 +144,27 @@ def fetch_trending_analysis(
     batch_size = 200
     all_coins: List[Row] = []
 
+    batches_attempted = 0
+    batches_failed = 0
+    first_error: Optional[str] = None
+
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i : i + batch_size]
+        batches_attempted += 1
         try:
             analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
-        except Exception:
+        except Exception as exc:
+            batches_failed += 1
+            if first_error is None:
+                first_error = repr(exc)
+            try:
+                print(
+                    f"[tradingview_mcp] fetch_trending_analysis batch "
+                    f"{i // batch_size + 1} failed: {exc!r}",
+                    file=sys.stderr,
+                )
+            except Exception:
+                pass
             continue
 
         for key, value in analysis.items():
@@ -174,6 +197,16 @@ def fetch_trending_analysis(
                 )
             except (TypeError, ZeroDivisionError, KeyError):
                 continue
+
+    # Sentinel: every batch failed means the upstream is unavailable.
+    # Raise so the tool wrapper returns a typed error envelope instead of
+    # an indistinguishable empty list.
+    if batches_attempted > 0 and batches_failed == batches_attempted:
+        raise BatchExecutionError(
+            batches_attempted=batches_attempted,
+            batches_failed=batches_failed,
+            first_error=first_error or "unknown",
+        )
 
     all_coins.sort(key=lambda x: x["changePercent"], reverse=True)
     return all_coins[:limit]
@@ -446,13 +479,15 @@ def analyze_coin(
         compute_trade_setup,
         compute_trade_quality,
     )
-    from tradingview_mcp.core.utils.validators import is_stock_exchange, normalize_tradingview_symbol
+    from tradingview_mcp.core.utils.validators import is_stock_exchange, normalize_tradingview_symbol, resolve_screener_for_symbol
 
     if not _TA_AVAILABLE:
         return {"error": "tradingview_ta is missing; run `uv sync`."}
 
     full_symbol = normalize_tradingview_symbol(symbol, exchange)
-    screener = EXCHANGE_SCREENER.get(exchange, "crypto")
+    # Screener follows the RESOLVED symbol's venue (e.g. XAUUSD→TVC:GOLD→"cfd"),
+    # not the caller's exchange guess — see resolve_screener_for_symbol().
+    screener = resolve_screener_for_symbol(full_symbol, exchange)
 
     try:
         analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=[full_symbol])
@@ -462,6 +497,15 @@ def analyze_coin(
 
         data = analysis[full_symbol]
         indicators = data.indicators
+        # tradingview_ta omits the ATR column from its analysis payload, leaving
+        # downstream consumers (stop-loss sizing, trade quality, volatility
+        # scoring) with a None they can't act on. Pull it from the screener
+        # endpoint as a best-effort augmentation.
+        if indicators.get("ATR") is None:
+            from tradingview_mcp.core.services.screener_provider import fetch_atr_for_ticker
+            atr_value = fetch_atr_for_ticker(full_symbol, screener, timeframe)
+            if atr_value is not None:
+                indicators["ATR"] = atr_value
         metrics = compute_metrics(indicators)
 
         if not metrics:
@@ -784,6 +828,15 @@ def run_multi_timeframe_analysis(
 
             data = analysis[symbol]
             indicators = data.indicators
+            # Backfill ATR per-timeframe — the ATR column on the scanner is
+            # resolution-suffixed, so we cannot share the response across the
+            # 5 timeframes. One POST per timeframe is acceptable (5 total)
+            # because run_multi_timeframe_analysis is a single-symbol path.
+            if indicators.get("ATR") is None:
+                from tradingview_mcp.core.services.screener_provider import fetch_atr_for_ticker
+                atr_value = fetch_atr_for_ticker(symbol, screener, tf)
+                if atr_value is not None:
+                    indicators["ATR"] = atr_value
             metrics = compute_metrics(indicators)
             extended = extract_extended_indicators(indicators)
             tf_context = analyze_timeframe_context(indicators, tf)

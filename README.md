@@ -5,6 +5,12 @@
 **The most complete AI-powered trading toolkit for Claude and MCP clients.**
 Backtesting + Live Sentiment + Yahoo Finance + 30+ Technical Analysis Tools — all in one MCP server.
 
+> [!IMPORTANT]
+> **Not financial advice.** Nothing produced by this software is investment, financial, legal, tax, or accounting advice. tradingview-mcp is an informational and educational analysis tool. Its outputs, including indicators, scores, signals, "trade setups", entries, stop losses, and targets, are computed from third party market data and are **not** recommendations to buy, sell, or hold any asset. It does not execute trades, manage money, or guarantee any result. Trading and investing carry a substantial risk of loss, and you can lose some or all of your capital. Always do your own research and consult a licensed professional before making any financial decision. You are solely responsible for your own decisions and for complying with the laws and regulations that apply to you. Market data may be delayed, inaccurate, or incomplete, and is provided without warranty.
+
+> [!TIP]
+> **Skip the setup. Use the hosted version.** [**pro.cryptosieve.com**](https://pro.cryptosieve.com) gives you all 30+ tools as one connector URL for Claude.ai, ChatGPT, Copilot, and Cursor. No `uv`, `pandas`, or Python to wrangle. **$9 per month, with a 7 day free trial.** Self hosting stays free forever; the hosted plan is just for folks who would rather skip the ops.
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MCP Ready](https://img.shields.io/badge/MCP-Ready-brightgreen)](https://modelcontextprotocol.com/)
@@ -25,16 +31,25 @@ Backtesting + Live Sentiment + Yahoo Finance + 30+ Technical Analysis Tools — 
   <img src="https://img.shields.io/badge/💎_Pro_($30)-Sponsor-gold?style=for-the-badge&logo=github-sponsors" alt="Sponsor $30"/>
 </a>
 
-> **🚀 Don't want to fight `uv` / `pandas` / Python on Windows?**  
-> [**pro.cryptosieve.com**](https://pro.cryptosieve.com) — same 30+ tools,  
-> one connector URL into Claude.ai, ChatGPT, Copilot, Cursor. **$9/month** with 7-day free trial.  
-> Self-hosting is free and always will be; the hosted version is just for  
-> folks who'd rather skip the ops dance.
 ---
 
 ## 🎥 Framework Demo
 
 https://github-production-user-asset-6210df.s3.amazonaws.com/67838093/478689497-4a605d98-43e8-49a6-8d3a-559315f6c01d.mp4
+
+---
+
+## 🆕 What's New
+
+**Stability & Strategy Expansion (May 2026)**
+
+- **9 backtest strategies** (up from 6) — added `rsi_pullback`, `keltner_breakout`, and `triple_ema`, covering trend-pullback, ATR-normalized breakout, and SMA200-filtered EMA cross edges. `compare_strategies` now ranks the full 9.
+- **Resilience layer** — automatic retry + 60-second TTL cache on the TradingView screener provider, eliminating transient `"Expecting value"` errors on `combined_analysis` and `multi_timeframe_analysis`. *(PR [#32](https://github.com/atilaahmettaner/tradingview-mcp/pull/32) — merged)*
+- **Financial news service rebuild** — replaces deprecated Reuters RSS endpoints with Yahoo Finance, MarketWatch, and CNBC. Fixes the long-standing `count: 0` bug on `financial_news`. *(PR [#33](https://github.com/atilaahmettaner/tradingview-mcp/pull/33) — merged)*
+- **TA throttle** — caps concurrent `tradingview_ta` calls (default 4) + min 0.8s spacing between starts. Prevents parallel bursts of `combined_analysis` / `multi_timeframe_analysis` from hitting TradingView's empty-body rate-limit cliff. Tunable via env vars. *(PR [#34](https://github.com/atilaahmettaner/tradingview-mcp/pull/34) — merged)*
+- **Walk-forward backtesting** (`walk_forward_backtest_strategy`) — train/test split with overfitting verdict (ROBUST / MODERATE / WEAK / OVERFITTED).
+- **Hourly (1h) timeframe** support across `backtest_strategy`, `compare_strategies`, and `walk_forward_backtest_strategy`.
+- **Full trade log + equity curve** outputs (`include_trade_log=True`, `include_equity_curve=True`).
 
 ---
 
@@ -50,7 +65,7 @@ https://github-production-user-asset-6210df.s3.amazonaws.com/67838093/478689497-
 |---------|-------------------|--------------------|--------------------|
 | **Setup Time** | 5 minutes | Hours (Docker, Conda...) | Weeks (Contracts) |
 | **Cost** | Free & Open Source | Variable | $30k+/year |
-| **Backtesting** | ✅ 6 strategies + Sharpe | ❌ Manual scripting | ✅ Proprietary |
+| **Backtesting** | ✅ 9 strategies + Walk-forward + Sharpe | ❌ Manual scripting | ✅ Proprietary |
 | **Live Sentiment** | ✅ Reddit + RSS news | ❌ Separate setup | ✅ Terminal |
 | **Market Data** | ✅ Live / Real-Time | Historical / Delayed | Live |
 | **API Keys** | **None required** | Multiple (OpenAI, etc.) | N/A |
@@ -152,6 +167,36 @@ uv tool install --python 3.13 tradingview-mcp-server
 After the install finishes, start Claude Desktop with the normal config and the server will come up instantly (cache is already warm).
 
 > _Credit: [@wyh4444](https://github.com/wyh4444) for the original report in [#24](https://github.com/atilaahmettaner/tradingview-mcp/issues/24)._
+
+---
+
+## ⚠️ Error Envelope Format
+
+Tools that have adopted the structured error format return either their normal payload **or** an error envelope:
+
+```json
+{"error": {"code": "ALL_BATCHES_FAILED", "message": "All 5 batches failed; first error: JSONDecodeError(...)", "batches_attempted": 5, "batches_failed": 5, "first_error": "..."}}
+```
+
+**Why:** the previous `[]` / `{"error": "Analysis failed: ..."}` strings made it impossible to distinguish "no matches today" from "upstream rate-limit cliff." The new envelope is programmatically branchable by `code`.
+
+**Currently adopted by:** `top_gainers`, `top_losers`, `rating_filter`, `volume_breakout_scanner`, `smart_volume_scanner`. More tools will follow in subsequent PRs.
+
+**Detecting an error:**
+
+```python
+result = volume_breakout_scanner(exchange="KUCOIN")
+if isinstance(result, dict) and "error" in result:
+    code = result["error"]["code"]
+    if code == "ALL_BATCHES_FAILED":
+        # Wait + retry, raise alert, fall back to single-batch call, etc.
+        ...
+else:
+    for row in result:
+        ...
+```
+
+Stable codes are defined in [`core/errors.py`](src/tradingview_mcp/core/errors.py).
 
 ---
 
@@ -262,28 +307,35 @@ Unlike basic screeners, this framework deploys **specialized AI agents** that de
 
 ## 🔧 All 30+ MCP Tools
 
-### 📊 Backtesting Engine *(New in v0.6.0)*
+### 📊 Backtesting Engine
 
 | Tool | Description |
 |------|-------------|
-| `backtest_strategy` | Backtest 1 of 6 strategies with institutional metrics (Sharpe, Calmar, Expectancy) |
-| `compare_strategies` | Run all 6 strategies on same symbol and rank by performance |
+| `backtest_strategy` | Backtest 1 of 9 strategies with institutional metrics (Sharpe, Calmar, Expectancy). Supports `1d` and `1h` timeframes; optional full trade log + equity curve. |
+| `compare_strategies` | Run all 9 strategies on the same symbol and rank by performance. |
+| `walk_forward_backtest_strategy` | Train/test split walk-forward validation with overfitting verdict (ROBUST / MODERATE / WEAK / OVERFITTED). |
 
-**6 Strategies to Test:**
+**9 Strategies to Test:**
 - `rsi` — RSI oversold/overbought mean reversion
 - `bollinger` — Bollinger Band mean reversion
 - `macd` — MACD golden/death cross
 - `ema_cross` — EMA 20/50 Golden/Death Cross
 - `supertrend` — ATR-based Supertrend trend following 🔥
 - `donchian` — Donchian Channel breakout (Turtle Trader style)
+- `rsi_pullback` — Dip-buy in confirmed uptrend (SMA50>SMA200 + RSI<40 entry) 🆕
+- `keltner_breakout` — ATR-normalized breakout (EMA20 + 2·ATR upper band) 🆕
+- `triple_ema` — EMA 20/50 cross gated by SMA200 trend filter 🆕
+
+> 🆕 strategies require `period='1y'` or `'2y'` so the SMA200 trend filter can complete its warmup.
 
 **Metrics you get:** Win Rate, Total Return, Sharpe Ratio, Calmar Ratio, Max Drawdown, Profit Factor, Expectancy, Best/Worst Trade, vs Buy-and-Hold, with **realistic commission + slippage simulation**.
 
 ```
-Example prompt: "Compare all strategies on BTC-USD for 2 years"
-→ #1 Supertrend: +31.5% | Sharpe: 2.1 | WR: 62%
-→ #2 Bollinger:  +18.3% | Sharpe: 3.4 | WR: 75%
-→ Buy & Hold:    -5.0%
+Example prompt: "Compare all 9 strategies on MSFT for 2 years"
+→ #1 triple_ema:        +15.1% | Sharpe:  0.0 | WR: 100%
+→ #2 keltner_breakout:  +14.3% | Sharpe:  4.7 | WR:  40%
+→ #3 bollinger:         +12.2% | Sharpe:  4.1 | WR:  64%
+→ Buy & Hold:            -2.1%
 ```
 
 ---
@@ -299,13 +351,13 @@ Example prompt: "Compare all strategies on BTC-USD for 2 years"
 
 ---
 
-### 🧠 AI Sentiment & Intelligence *(New in v0.5.0)*
+### 🧠 AI Sentiment & Intelligence
 
 | Tool | Description |
 |------|-------------|
 | `market_sentiment` | Reddit sentiment across finance communities (bullish/bearish score, top posts) |
-| `financial_news` | Live RSS headlines from Reuters, CoinDesk, CoinTelegraph |
-| `combined_analysis` | **Power Tool**: TradingView technicals + Reddit sentiment + live news → confluence decision |
+| `financial_news` | Live RSS headlines from Yahoo Finance, MarketWatch, CNBC, CoinDesk, CoinTelegraph |
+| `combined_analysis` | **Power Tool**: TradingView technicals + Reddit sentiment + live news → confluence decision. Now backed by retry + 60s cache for resilience against transient screener errors. |
 
 ---
 
@@ -348,8 +400,11 @@ AI: [market_sentiment] → Strongly Bullish (0.41) | 23 posts | 18 bullish
 You: "Backtest RSI strategy on BTC-USD for 2 years"
 AI: [backtest_strategy] → +31.5% return | 100% win rate | 2 trades | B&H: -5%
 
-You: "Which strategy worked best on AAPL in the last 2 years?"
-AI: [compare_strategies] → Supertrend #1 (+14.6%, Sharpe 3.09), MACD last (-9.1%)
+You: "Which of the 9 strategies worked best on MSFT in the last 2 years?"
+AI: [compare_strategies] → triple_ema #1 (+15.1%, WR 100%), keltner_breakout #2 (+14.3%), macd last (-23.4%)
+
+You: "Run walk-forward backtest on supertrend for SPY"
+AI: [walk_forward_backtest_strategy] → Verdict: ROBUST (avg robustness 0.92) | OOS return +8.5%
 
 You: "Analyze TSLA with all signals: technical + sentiment + news"
 AI: [combined_analysis] → BUY (Technical STRONG BUY + Bullish Reddit + Positive news)
@@ -380,10 +435,12 @@ Every sponsor directly funds new features like Walk-Forward Backtesting, Twitter
 - [x] TradingView technical analysis (30+ indicators)
 - [x] Multi-exchange screener (Binance, KuCoin, MEXC, EGX, US stocks)
 - [x] Reddit sentiment analysis
-- [x] Live financial news (RSS)
+- [x] Live financial news (Yahoo / MarketWatch / CNBC / CoinDesk / CoinTelegraph)
 - [x] Yahoo Finance real-time prices
-- [x] Backtesting engine (6 strategies + Sharpe/Calmar/Expectancy)
-- [ ] Walk-forward backtesting (overfitting detection)
+- [x] Backtesting engine (9 strategies + Sharpe / Calmar / Expectancy)
+- [x] Walk-forward backtesting (overfitting detection)
+- [x] Resilience layer (retry + TTL cache) on screener provider
+- [x] Hourly (1h) backtesting timeframe
 - [ ] Twitter/X market sentiment
 - [ ] Paper trading simulation
 - [ ] Managed cloud hosting (no local setup)
